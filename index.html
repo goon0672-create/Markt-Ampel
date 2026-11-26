@@ -173,11 +173,12 @@
     <div class="panel">
       <div class="markt-kopf"><h2>Was am Markt abgeht</h2>
         <div class="kopf-rechts">
+          <span class="seg" id="waehrungWahl" title="Kurse in Dollar oder Euro (Umrechnung mit dem EZB-Tageskurs)"><button data-wahrung="usd">$ USD</button><button data-wahrung="eur">€ EUR</button></span>
           <span class="seg" id="boersenWahl"><button data-boerse="alle">Alle</button><button data-boerse="kraken">Kraken</button><button data-boerse="bitvavo">Bitvavo</button><button data-boerse="okx">OKX</button></span>
           <span class="reihe-wahl"><button id="reiheKnopf" type="button">Reihenfolge ▾</button><div class="reihe" id="reihe" hidden></div></span>
         </div></div>
       <div class="expl" style="margin-top:-2px">Top 10 Coins, RSI(14) je Zeiteinheit: <span class="chip" style="background:#14532d;color:#fff">&lt; 30</span> überverkauft · <span class="chip" style="background:#7f1d1d;color:#fff">&gt; 70</span> überkauft. Zeile anklicken für den Chart.
-        <span id="boersenHinweis"></span> Kraken und OKX in Dollar, Bitvavo in Euro.</div>
+        <span id="boersenHinweis"></span> <span id="waehrungHinweis"></span></div>
       <table>
         <thead><tr><th>Coin</th><th>Quelle</th><th class="num">Kurs</th><th class="num">24 h</th><th class="num">RSI 1T</th><th class="num">RSI 1W</th><th class="num">RSI 1M</th></tr></thead>
         <tbody id="marketBody"><tr><td colspan="7" class="loading">lädt …</td></tr></tbody>
@@ -197,7 +198,7 @@
   </section>
 
   <footer>
-    Datenquellen: alternative.me (Angst &amp; Gier) · Coin Metrics Community API (BTC-Preis, MVRV; Ersatz: bitcoin-data.com) · VIX: CBOE, Ersatz Yahoo Finance, FRED und CNBC (Verlauf bzw. aktueller Wert) · Kraken, Bitvavo, OKX (Coin-Kurse; Monats-RSI-Ersatz: Binance / OKX). Lässt eine Seite die direkte Abfrage aus dem Browser nicht zu, holt das Tool die Daten über öffentliche Umweg-Server (allorigins, codetabs, whateverorigin, corsproxy.io).<br>
+    Datenquellen: alternative.me (Angst &amp; Gier) · Coin Metrics Community API (BTC-Preis, MVRV; Ersatz: bitcoin-data.com) · VIX: CBOE, Ersatz Yahoo Finance, FRED und CNBC (Verlauf bzw. aktueller Wert) · Kraken, Bitvavo, OKX (Coin-Kurse; Monats-RSI-Ersatz: Binance / OKX) · Dollar/Euro: EZB-Tageskurs über frankfurter.app. Lässt eine Seite die direkte Abfrage aus dem Browser nicht zu, holt das Tool die Daten über öffentliche Umweg-Server (allorigins, codetabs, whateverorigin, corsproxy.io).<br>
     Score-Logik: Jeder Indikator wird auf 0–100 umgerechnet (0 = extreme Kaufzone, 100 = extreme Überhitzung). Unter 35 grün, 35–65 gelb, über 65 rot. Gesamt-Score = Durchschnitt; der VIX zählt nur halb.<br>
     Reine Information, keine Anlageberatung. Indikatoren zeigen Zonen, keine exakten Hoch- oder Tiefpunkte.
   </footer>
@@ -628,6 +629,44 @@ function rsiChip(v){
   const bg = v<30?'#14532d': v<40?'#1f3d2b': v>70?'#7f1d1d': v>60?'#5a3415':'#262a31';
   return `<span class="chip${bg==='#262a31'?' c-grau':''}" style="background:${bg};color:${bg==='#262a31'?'':'#fff'}">${fmt(v,0)}</span>`;
 }
+/* ---------- Dollar / Euro: Umrechnung mit dem EZB-Tageskurs (Frankfurter API), Verlauf je Tag ---------- */
+let ANZEIGE = load('waehrung') || 'usd';
+const fx = { reihe:null, fehler:false };   // [[ms, EUR je 1 USD], …] aufsteigend
+async function fxLaden(){
+  if(fx.reihe || fx.fehler) return;
+  const von='2017-01-01';
+  for(const basis of ['https://api.frankfurter.app/','https://api.frankfurter.dev/v1/']){
+    try{
+      const j=(await holeMitUmweg(basis+von+'..?from=USD&to=EUR',false)).daten;
+      const r=Object.entries(j.rates||{}).map(([d,x])=>[Date.parse(d+'T00:00:00Z'), +x.EUR]).filter(x=>x[1]>0).sort((a,b)=>a[0]-b[0]);
+      if(r.length){ fx.reihe=r; return; }
+    }catch(e){}
+  }
+  fx.fehler=true;
+}
+function eurJeUsd(t){                       // Kurs am Tag t (letzter bekannter Tag davor, z. B. Wochenende)
+  const r=fx.reihe; if(!r) return null;
+  if(t==null || t>=r[r.length-1][0]) return r[r.length-1][1];
+  let lo=0, hi=r.length-1;
+  if(t<=r[0][0]) return r[0][1];
+  while(lo<hi){ const m=(lo+hi+1)>>1; if(r[m][0]<=t) lo=m; else hi=m-1; }
+  return r[lo][1];
+}
+// Wert von der Börsenwährung in die gewählte Anzeige umrechnen (Bitvavo = EUR, Kraken/OKX = USD)
+function umrechnen(v, boerse, t){
+  if(v==null) return v;
+  const von = boerse==='bitvavo' ? 'eur' : 'usd';
+  if(von===ANZEIGE) return v;
+  const k=eurJeUsd(t); if(!k) return null;
+  return von==='usd' ? v*k : v/k;
+}
+const zeichen = () => ANZEIGE==='eur' ? '€' : '$';
+function waehrungUiZeichnen(){
+  document.querySelectorAll('[data-wahrung]').forEach(x=>x.classList.toggle('active', x.dataset.wahrung===ANZEIGE));
+  $('waehrungHinweis').textContent = fx.fehler
+    ? 'Wechselkurs nicht abrufbar – Kurse in Börsenwährung (Kraken/OKX $, Bitvavo €).'
+    : `Alle Kurse in ${ANZEIGE==='eur'?'Euro':'Dollar'} (umgerechnet mit dem EZB-Tageskurs, RSI aus den Börsendaten).`;
+}
 function preis(v, w){
   if(v==null||!isFinite(v)) return '–';
   const a=Math.abs(v), d=a>=1000?2:a>=1?2:a>=0.01?4:6;
@@ -651,8 +690,25 @@ function boersenUiZeichnen(){
   });
 }
 let marktNr=0;
+function kursZelle(d){
+  const v=umrechnen(d.kurs, d.boerse, null);
+  return v==null ? preis(d.kurs, WAEHRUNG[d.boerse]) : preis(v, zeichen());
+}
+function tabelleZeichnen(){
+  const rows=state.markt||[];
+  $('marketBody').innerHTML=rows.map(o=>{
+    const d=o.d, ch=d?d.pct24:null;
+    return `<tr class="coin${o.c===state.detailCoin?' sel':''}" data-coin="${o.c}"><td><b>${o.c}</b></td>
+      <td>${d?BOERSEN[d.boerse]:'<span style="color:var(--muted)">nicht gefunden</span>'}</td>
+      <td class="num">${d?kursZelle(d):'–'}</td>
+      <td class="num ${ch>=0?'pos':'neg'}" ${d&&d.pctHinweis?`title="${d.pctHinweis}"`:''}>${ch==null?'–':(ch>=0?'+':'')+fmt(ch,2)+' %'}</td>
+      <td class="num">${rsiChip(o.r['1d'])}</td><td class="num">${rsiChip(o.r['1w'])}</td><td class="num">${rsiChip(o.r['1M'])}</td></tr>`;
+  }).join('');
+  document.querySelectorAll('tr.coin').forEach(tr=>tr.onclick=()=>{ state.detailCoin=tr.dataset.coin; document.querySelectorAll('tr.coin').forEach(x=>x.classList.toggle('sel',x===tr)); renderDetail(); });
+}
 async function loadMarket(){
-  boersenUiZeichnen();
+  boersenUiZeichnen(); waehrungUiZeichnen();
+  fxLaden().then(()=>{ waehrungUiZeichnen(); if(state.markt){ tabelleZeichnen(); renderDetail(); } });
   const nr=++marktNr;
   $('marketBody').innerHTML='<tr><td colspan="7" class="loading">Kurse und RSI werden geholt …'+(listeFuer()[0]==='kraken'?' (Kraken: etwa 1 Sekunde je Coin)':'')+'</td></tr>';
   $('marketErr').textContent='';
@@ -663,27 +719,23 @@ async function loadMarket(){
   }));
   if(nr!==marktNr) return;          // ältere Antwort verwerfen
   state.markt=rows;
-  $('marketBody').innerHTML=rows.map(o=>{
-    const d=o.d, ch=d?d.pct24:null;
-    return `<tr class="coin${o.c===state.detailCoin?' sel':''}" data-coin="${o.c}"><td><b>${o.c}</b></td>
-      <td>${d?BOERSEN[d.boerse]:'<span style="color:var(--muted)">nicht gefunden</span>'}</td>
-      <td class="num">${d?preis(d.kurs, WAEHRUNG[d.boerse]):'–'}</td>
-      <td class="num ${ch>=0?'pos':'neg'}" ${d&&d.pctHinweis?`title="${d.pctHinweis}"`:''}>${ch==null?'–':(ch>=0?'+':'')+fmt(ch,2)+' %'}</td>
-      <td class="num">${rsiChip(o.r['1d'])}</td><td class="num">${rsiChip(o.r['1w'])}</td><td class="num">${rsiChip(o.r['1M'])}</td></tr>`;
-  }).join('');
-  document.querySelectorAll('tr.coin').forEach(tr=>tr.onclick=()=>{ state.detailCoin=tr.dataset.coin; document.querySelectorAll('tr.coin').forEach(x=>x.classList.toggle('sel',x===tr)); renderDetail(); });
+  tabelleZeichnen();
   renderDetail();
 }
 function renderDetail(){
   const c=state.detailCoin, tf=state.detailTf;
   const o=(state.markt||[]).find(x=>x.c===c);
   const d=o&&o.d;
-  $('detailTitle').textContent=`${c}/${d&&d.boerse==='bitvavo'?'EUR':'USD'} · ${({'1d':'Tageschart','1w':'Wochenchart','1M':'Monatschart'})[tf]}${d?' · '+BOERSEN[d.boerse]:''}`;
+  const anzeigeEur = (fx.reihe || !d) ? ANZEIGE==='eur' : d.boerse==='bitvavo';
+  $('detailTitle').textContent=`${c}/${anzeigeEur?'EUR':'USD'} · ${({'1d':'Tageschart','1w':'Wochenchart','1M':'Monatschart'})[tf]}${d?' · '+BOERSEN[d.boerse]:''}`;
   if(!d || !(d.kerzen[tf]||[]).length) return;
-  const k=d.kerzen[tf], w=WAEHRUNG[d.boerse];
-  const closes=k.map(x=>x.c), r=rsi(closes), labels=k.map(x=>dstr(x.t));
+  const k=d.kerzen[tf];
+  const roh=k.map(x=>x.c), r=rsi(roh), labels=k.map(x=>dstr(x.t));      // RSI aus den Börsendaten
+  const umg=k.map(x=>umrechnen(x.c, d.boerse, x.t));
+  const ok=umg.every(v=>v!=null);
+  const closes = ok ? umg : roh, w = ok ? zeichen() : WAEHRUNG[d.boerse];
   makeChart('detailPrice',{type:'line', data:{labels, datasets:[{data:closes, borderColor:'#60a5fa', fill:{target:'origin'}, backgroundColor:'rgba(96,165,250,.08)'}]},
-    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>preis(x.parsed.y,w)}}}, scales:{x:{display:false}, y:{ticks:{maxTicksLimit:6}}}})});
+    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>preis(x.parsed.y,w)}}}, scales:{x:{display:false}, y:{ticks:{maxTicksLimit:6, callback:v=>fmt(v, Math.abs(v)<10?2:0)+' '+w}}}})});
   makeChart('detailRsi',{type:'line', data:{labels, datasets:[{data:r, borderColor:'#eab308'}]},
     options:baseOpts({plugins:{legend:{display:false}, bands:{list:[{from:0,to:30,color:GREEN_BAND},{from:70,to:100,color:RED_BAND}]}},
       scales:{x:{ticks:{maxTicksLimit:8,maxRotation:0},grid:{display:false}}, y:{min:0,max:100,ticks:{stepSize:30}}}})});
@@ -691,6 +743,10 @@ function renderDetail(){
 document.querySelectorAll('[data-tf]').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('active',x===b));
   state.detailTf=b.dataset.tf; renderDetail();
+});
+document.querySelectorAll('[data-wahrung]').forEach(b=>b.onclick=()=>{
+  ANZEIGE=b.dataset.wahrung; store('waehrung',ANZEIGE); waehrungUiZeichnen();
+  if(state.markt){ tabelleZeichnen(); renderDetail(); }
 });
 document.querySelectorAll('[data-boerse]').forEach(b=>b.onclick=()=>{ BOERSE=b.dataset.boerse; store('boerse',BOERSE); loadMarket(); });
 $('reiheKnopf').onclick=e=>{ e.stopPropagation(); $('reihe').hidden=!$('reihe').hidden; };
