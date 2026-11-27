@@ -29,6 +29,16 @@
   .markt-kopf{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
   .markt-kopf h2{margin:0}
   .kopf-rechts{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .reiskorn{background:var(--panel2);border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:10px;padding:9px 12px;margin:0 0 10px;font-size:13px;line-height:1.45}
+  .reiskorn .rk-zeile b.wert{font-size:15px}
+  .reiskorn details{margin-top:6px}
+  .reiskorn summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+  .reiskorn table{margin-top:6px;font-size:12.5px}
+  .reiskorn th,.reiskorn td{padding:5px 7px}
+  .reiskorn td:first-child{white-space:nowrap}
+  .reiskorn tr.aktuell td{background:rgba(96,165,250,.16);font-weight:600}
+  .reiskorn .rk-hinweis{margin-top:8px;color:var(--muted);font-size:12.5px}
+  .reiskorn .rk-quelle{margin-top:6px;color:var(--muted);font-size:11.5px}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px}
   header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -130,6 +140,7 @@
         <div id="fngGauge"></div>
       </div>
       <div class="expl">Stimmung am Kryptomarkt (0 = extreme Angst, 100 = extreme Gier). Unter 25 gilt als Kaufbereich, über 75 als überhitzt. Reagiert schnell und kann lange in einem Extrem bleiben.</div>
+      <div class="reiskorn" id="reiskorn"></div>
       <div class="chartbox"><canvas id="fngChart"></canvas></div>
       <div class="err" id="fngErr"></div>
     </div>
@@ -198,7 +209,7 @@
   </section>
 
   <footer>
-    Datenquellen: alternative.me (Angst &amp; Gier) · Coin Metrics Community API (BTC-Preis, MVRV; Ersatz: bitcoin-data.com) · VIX: CBOE, Ersatz Yahoo Finance, FRED und CNBC (Verlauf bzw. aktueller Wert) · Kraken, Bitvavo, OKX (Coin-Kurse; Monats-RSI-Ersatz: Binance / OKX) · Dollar/Euro: EZB-Tageskurs über frankfurter.app. Lässt eine Seite die direkte Abfrage aus dem Browser nicht zu, holt das Tool die Daten über öffentliche Umweg-Server (allorigins, codetabs, whateverorigin, corsproxy.io).<br>
+    Datenquellen: CoinMarketCap (Angst &amp; Gier, Ersatz alternative.me) · Coin Metrics Community API (BTC-Preis, MVRV; Ersatz: bitcoin-data.com) · VIX: CBOE, Ersatz Yahoo Finance, FRED und CNBC (Verlauf bzw. aktueller Wert) · Kraken, Bitvavo, OKX (Coin-Kurse; Monats-RSI-Ersatz: Binance / OKX) · Dollar/Euro: EZB-Tageskurs über frankfurter.app. Lässt eine Seite die direkte Abfrage aus dem Browser nicht zu, holt das Tool die Daten über öffentliche Umweg-Server (allorigins, codetabs, whateverorigin, corsproxy.io).<br>
     Score-Logik: Jeder Indikator wird auf 0–100 umgerechnet (0 = extreme Kaufzone, 100 = extreme Überhitzung). Unter 35 grün, 35–65 gelb, über 65 rot. Gesamt-Score = Durchschnitt; der VIX zählt nur halb.<br>
     Reine Information, keine Anlageberatung. Indikatoren zeigen Zonen, keine exakten Hoch- oder Tiefpunkte.
   </footer>
@@ -371,18 +382,62 @@ async function tickers(){
 }
 
 /* ---------- 1) Angst & Gier ---------- */
+/* Angst & Gier: zuerst CoinMarketCap (den nutzt die Reiskorn-Strategie), sonst alternative.me */
+async function fngVonCmc(){
+  const ende=Math.floor(Date.now()/1000), start=ende-370*86400;
+  const j=(await holeMitUmweg(`https://api.coinmarketcap.com/data-api/v3/fear-greed/chart?start=${start}&end=${ende}`,false)).daten;
+  const liste=(j && j.data && (j.data.dataList || j.data.historicalValues)) || [];
+  const rows=liste.map(x=>({t:(+x.timestamp<1e12 ? +x.timestamp*1000 : +x.timestamp), v:+(x.score ?? x.value)}))
+    .filter(x=>isFinite(x.t) && isFinite(x.v)).sort((a,b)=>a.t-b.t);
+  if(rows.length<10) throw new Error('keine CMC-Daten');
+  return rows;
+}
+async function fngVonAlternative(){
+  const j=await getJSON('https://api.alternative.me/fng/?limit=365');
+  return j.data.map(r=>({t:+r.timestamp*1000, v:+r.value})).sort((a,b)=>a.t-b.t);
+}
 async function loadFng(){
-  try{
-    const j=await getJSON('https://api.alternative.me/fng/?limit=365');
-    const rows=j.data.slice().reverse();
-    const v=+rows[rows.length-1].value;
-    setIndicator('fng', v, String(v));
-    makeChart('fngChart',{type:'line',
-      data:{labels:rows.map(r=>dstr(+r.timestamp*1000)), datasets:[{data:rows.map(r=>+r.value), borderColor:'#60a5fa', fill:false}]},
-      options:baseOpts({plugins:{legend:{display:false}, bands:{list:[{from:0,to:25,color:GREEN_BAND},{from:75,to:100,color:RED_BAND}]}},
-        scales:{x:{ticks:{maxTicksLimit:8,maxRotation:0},grid:{display:false}}, y:{min:0,max:100}}})});
-    $('fngErr').textContent='';
-  }catch(e){ $('fngErr').textContent='Angst-&-Gier-Daten nicht abrufbar ('+e.message+').'; }
+  let rows=null, quelle='';
+  try{ rows=await fngVonCmc(); quelle='CoinMarketCap'; }
+  catch(e){ try{ rows=await fngVonAlternative(); quelle='alternative.me (Ersatz – CoinMarketCap nicht erreichbar)'; }catch(e2){} }
+  if(!rows){ $('fngErr').textContent='Angst-&-Gier-Daten nicht abrufbar (CoinMarketCap und alternative.me).'; reiskornZeichnen(null); return; }
+  const v=rows[rows.length-1].v;
+  setIndicator('fng', v, String(Math.round(v)));
+  makeChart('fngChart',{type:'line',
+    data:{labels:rows.map(r=>dstr(r.t)), datasets:[{data:rows.map(r=>r.v), borderColor:'#60a5fa', fill:false}]},
+    options:baseOpts({plugins:{legend:{display:false}, bands:{list:[{from:0,to:25,color:GREEN_BAND},{from:75,to:100,color:RED_BAND}]}},
+      scales:{x:{ticks:{maxTicksLimit:8,maxRotation:0},grid:{display:false}}, y:{min:0,max:100}}})});
+  $('fngErr').innerHTML=`<span style="color:var(--muted)">Quelle: ${quelle} · Stand ${dstr(rows[rows.length-1].t)}</span>`;
+  reiskornZeichnen(v, quelle);
+}
+
+/* ---------- Reiskorn-Strategie 2.0 (Lud's Börsenchance): Anteil des Monatsbudgets je Angst-&-Gier-Stufe ---------- */
+const REISKORN = [
+  {von:0,  bis:24,  farbe:'🔴', name:'Extreme Angst',     aktion:'Volle Investition',  budget:'75–90 %', rand:'#d0453a'},
+  {von:25, bis:44,  farbe:'🟠', name:'Leichte Angst',     aktion:'Moderate Käufe',     budget:'bis max. 20 %', rand:'#d9620f'},
+  {von:45, bis:55,  farbe:'🟡', name:'Neutrale Stimmung', aktion:'Kleine Käufe – nur bei fortlaufend guter Stimmung, bei abnehmender keine', budget:'0–10 %', rand:'#c8920e'},
+  {von:56, bis:74,  farbe:'🟢', name:'Gier',              aktion:'Keine Käufe',        budget:'0 %', rand:'#1f9d6b', abgeleitet:true},
+  {von:75, bis:100, farbe:'🟢', name:'Extreme Gier',      aktion:'Keine Käufe',        budget:'0 %', rand:'#1f9d6b'},
+];
+function reiskornZeichnen(wert, quelle){
+  const box=$('reiskorn'); if(!box) return;
+  const w = wert==null ? null : Math.round(wert);
+  const st = w==null ? null : REISKORN.find(x=>w>=x.von && w<=x.bis);
+  const gruen = st && st.von>=56;
+  box.style.borderLeftColor = st ? st.rand : 'var(--muted)';
+  const zeile = st
+    ? `<div class="rk-zeile">${st.farbe} <b>Reiskorn-Strategie:</b> ${st.name} (${w}) → <b class="wert">${st.budget}</b> des Monatsbudgets – ${st.aktion}${gruen ? '. <b>Budget zur Seite legen</b> und warten, bis der Index in den orangen Bereich (Angst) wechselt.' : '.'}</div>`
+    : `<div class="rk-zeile"><b>Reiskorn-Strategie:</b> Angst-&-Gier-Wert nicht verfügbar.</div>`;
+  box.innerHTML = zeile + `
+    <details><summary>Tabelle: Anteil des Monatsbudgets je Stufe</summary>
+      <table><thead><tr><th>Index</th><th>Stufe</th><th>Aktion</th><th class="num">% des Monatsbudgets</th></tr></thead><tbody>
+      ${REISKORN.map(x=>`<tr class="${st===x?'aktuell':''}"><td>${x.farbe} ${x.von}–${x.bis}</td><td>${x.name}${x.abgeleitet?' <span style="color:var(--muted)">*</span>':''}</td><td>${x.aktion}</td><td class="num">${x.budget}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="rk-hinweis">💡 <b>Hinweis aus der Reiskorn-Strategie:</b> Bleibt der Index wochenlang im grünen Bereich (Gier oder extreme Gier), legst du dein monatliches Budget zur Seite und wartest. Sobald er mindestens in den orangen Bereich (Angst) wechselt, investierst du laut Tabelle – dann auch mit dem angesparten Budget. Im extremen Angstbereich sollte das meiste investiert werden, hier gibt es generell die besten Einstiegspreise.</div>
+      <div class="rk-quelle">Quelle: „Die Reiskorn-Strategie 2.0“, Lud's Börsenchance, Kapitel 6 – das E-Book nennt nur Farben; die Zahlengrenzen sind die übliche Einteilung des Index.
+        * Die Stufe „Gier“ (56–74) steht nicht im E-Book; 0 % ist abgeleitet, weil erst ab Orange wieder gekauft wird.
+        Index: ${quelle||'–'}. Nur Information, keine Anlageberatung.</div>
+    </details>`;
 }
 
 /* ---------- 2+3) BTC-Historie: Monats-RSI und MVRV-Z ---------- */
